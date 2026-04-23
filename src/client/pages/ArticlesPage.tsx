@@ -130,7 +130,24 @@ export function ArticlesPage() {
           </div>
         ) : articles.length === 0 ? (
           <div className="no-results">
-            <p>No articles found{search ? ` for "${search}"` : ''}. Try a different search or category.</p>
+            {search || category ? (
+              <p>No articles found{search ? ` for "${search}"` : ''}. Try a different search or category.</p>
+            ) : (
+              <div className="first-launch-state">
+                <div className="first-launch-icon" aria-hidden="true">
+                  <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
+                    <circle cx="32" cy="32" r="32" fill="var(--accent-soft)"/>
+                    <path d="M32 16C32 16 20 24 20 34C20 40.627 25.373 46 32 46C38.627 46 44 40.627 44 34C44 24 32 16 32 16Z" fill="var(--accent)" opacity="0.25"/>
+                    <path d="M32 16C32 16 20 24 20 34C20 40.627 25.373 46 32 46" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round"/>
+                    <path d="M32 16C32 16 44 24 44 34C44 40.627 38.627 46 32 46" stroke="var(--accent-dark)" strokeWidth="2.5" strokeLinecap="round"/>
+                    <path d="M32 46V28" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round"/>
+                  </svg>
+                </div>
+                <h3 className="first-launch-title">Articles are being prepared</h3>
+                <p className="first-launch-desc">The Quiet Gut library is seeding now. Thirty articles on IBS, the gut-brain connection, SIBO, and the emotional roots of digestive pain will be live shortly.</p>
+                <p className="first-launch-desc">Check back in a few minutes, or take the <a href="/gut-health-quiz">Gut Health Quiz</a> while you wait.</p>
+              </div>
+            )}
           </div>
         ) : (
           <>
@@ -276,6 +293,30 @@ export function ArticlesPage() {
           padding: var(--space-3xl);
           font-family: var(--font-ui);
           color: var(--text-muted);
+        }
+        .first-launch-state {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: var(--space-lg);
+          max-width: 480px;
+          margin: 0 auto;
+          padding: var(--space-2xl) 0;
+        }
+        .first-launch-icon { flex-shrink: 0; }
+        .first-launch-title {
+          font-family: var(--font-heading);
+          font-size: 1.5rem;
+          font-weight: 700;
+          color: var(--text-primary);
+          margin: 0;
+        }
+        .first-launch-desc {
+          font-family: var(--font-ui);
+          font-size: 0.95rem;
+          color: var(--text-secondary);
+          line-height: 1.6;
+          margin: 0;
         }
         .pagination {
           display: flex;
