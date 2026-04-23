@@ -1,11 +1,60 @@
 import cron from 'node-cron';
-import { spawn } from 'child_process';
+import { spawn, execFile } from 'child_process';
 import { fileURLToPath } from 'url';
-import { dirname, resolve } from 'path';
+import { dirname, resolve as resolvePath } from 'path';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const projectRoot = resolve(__dirname, '..');
+const projectRoot = resolvePath(__dirname, '..');
+
+// ─── Startup seed: run seed-articles if DB is empty ──────────
+async function runStartupSeed() {
+  if (!process.env.DATABASE_URL) {
+    console.log('[startup-seed] No DATABASE_URL — skipping seed');
+    return;
+  }
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.log('[startup-seed] No ANTHROPIC_API_KEY — skipping seed');
+    return;
+  }
+  try {
+    const { query, initDb, close } = await import('../src/lib/db.mjs');
+    await initDb();
+    const result = await query('SELECT COUNT(*) as cnt FROM articles WHERE published = true');
+    const count = parseInt(result.rows[0].cnt, 10);
+    await close();
+    if (count >= 10) {
+      console.log(`[startup-seed] ${count} articles already seeded — skipping`);
+      return;
+    }
+    console.log(`[startup-seed] Only ${count} articles found — running seed...`);
+    await new Promise((resolve, reject) => {
+      const seed = spawn('node', [resolvePath(projectRoot, 'scripts/seed-articles.mjs')], {
+        cwd: projectRoot,
+        stdio: 'inherit',
+        env: { ...process.env }
+      });
+      seed.on('exit', (code) => {
+        if (code === 0) {
+          console.log('[startup-seed] Seed complete');
+          resolve();
+        } else {
+          console.error(`[startup-seed] Seed exited with code ${code}`);
+          resolve(); // Don't block server start on seed failure
+        }
+      });
+      seed.on('error', (err) => {
+        console.error('[startup-seed] Seed error:', err);
+        resolve();
+      });
+    });
+  } catch (err) {
+    console.error('[startup-seed] Error checking article count:', err.message);
+  }
+}
+
+// Run seed in background (don't await — let server start immediately)
+runStartupSeed().catch(console.error);
 
 // ─── Start web server as child process ────────────────────────
 const server = spawn('node', ['dist/index.js'], {
