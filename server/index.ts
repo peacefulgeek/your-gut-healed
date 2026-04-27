@@ -24,6 +24,21 @@ async function createServer() {
   // Health check FIRST — must work even if other routes fail
   app.use('/health', healthRouter);
 
+  // www → non-www 301 redirect (production only)
+  // Must come before all other routes so Google never indexes www.*
+  if (!isDev) {
+    app.use((req, res, next) => {
+      const host = req.hostname; // respects trust proxy
+      if (host && host.startsWith('www.')) {
+        const bare = host.slice(4); // strip leading 'www.'
+        const proto = req.headers['x-forwarded-proto'] ?? 'https';
+        const redirectUrl = `${proto}://${bare}${req.originalUrl}`;
+        return res.redirect(301, redirectUrl);
+      }
+      next();
+    });
+  }
+
   // Security headers
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
