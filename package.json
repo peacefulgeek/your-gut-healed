@@ -15,10 +15,11 @@
     "start": "NODE_ENV=production node scripts/start-with-cron.mjs",
     "verify-build": "NODE_ENV=production node -e \"import('./dist/index.js').then(()=>{console.log('import-ok');process.exit(0)}).catch(e=>{console.error(e);process.exit(1)})\"",
     "seed": "node scripts/seed-articles.mjs",
+    "bulk-seed": "node scripts/bulk-seed.mjs",
     "audit": "node scripts/audit-quality.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.30.0",
+    "openai": "^4.77.0",
     "compression": "^1.7.4",
     "express": "^4.21.0",
     "node-cron": "^3.0.3",

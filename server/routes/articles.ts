@@ -4,6 +4,7 @@ import { query } from '../../src/lib/db.mjs';
 export const articlesRouter = express.Router();
 
 // GET /api/articles — list with filtering, pagination, full-text search
+// CRITICAL: ALWAYS filter by status = 'published'. Queued articles must NEVER leak.
 articlesRouter.get('/', async (req, res) => {
   try {
     const limit = Math.min(parseInt(String(req.query.limit || '12'), 10), 50);
@@ -11,7 +12,7 @@ articlesRouter.get('/', async (req, res) => {
     const category = String(req.query.category || '');
     const q = String(req.query.q || '').trim();
 
-    const conditions: string[] = ['published = true'];
+    const conditions: string[] = ["status = 'published'"];
     const params: any[] = [];
     let paramIdx = 1;
 
@@ -56,6 +57,7 @@ articlesRouter.get('/', async (req, res) => {
 });
 
 // GET /api/articles/:slug — single article with related
+// CRITICAL: status = 'published' guard on every query.
 articlesRouter.get('/:slug', async (req, res) => {
   try {
     const { slug } = req.params;
@@ -65,7 +67,7 @@ articlesRouter.get('/:slug', async (req, res) => {
               image_url, image_alt, category, tags, published_at, reading_time,
               author, word_count, asins_used, cta_primary, opener_type, conclusion_type
        FROM articles
-       WHERE slug = $1 AND published = true`,
+       WHERE slug = $1 AND status = 'published'`,
       [slug]
     );
 
@@ -75,12 +77,12 @@ articlesRouter.get('/:slug', async (req, res) => {
 
     const article = result.rows[0];
 
-    // Related: same category first, then recent
+    // Related: same category first, then recent — always published only
     const relatedResult = await query(
       `SELECT slug, title, meta_description, image_url, image_alt, category,
               published_at, reading_time
        FROM articles
-       WHERE category = $1 AND slug != $2 AND published = true
+       WHERE category = $1 AND slug != $2 AND status = 'published'
        ORDER BY published_at DESC
        LIMIT 4`,
       [article.category, slug]
@@ -92,7 +94,7 @@ articlesRouter.get('/:slug', async (req, res) => {
         `SELECT slug, title, meta_description, image_url, image_alt, category,
                 published_at, reading_time
          FROM articles
-         WHERE slug != $1 AND published = true
+         WHERE slug != $1 AND status = 'published'
          ORDER BY published_at DESC
          LIMIT 4`,
         [slug]

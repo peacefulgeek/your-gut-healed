@@ -8,7 +8,7 @@ const DOMAIN = 'https://yourgutHealed.com';
 sitemapRouter.get('/', async (req, res) => {
   try {
     const { rows } = await query(
-      `SELECT slug, published_at, updated_at FROM articles WHERE published = true ORDER BY published_at DESC`,
+      `SELECT slug, published_at, updated_at FROM articles WHERE status = 'published' ORDER BY published_at DESC`,
       []
     );
 

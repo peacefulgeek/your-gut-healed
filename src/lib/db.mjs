@@ -39,6 +39,11 @@ export async function close() {
 
 export async function initDb() {
   console.log('[db] Initializing schema...');
+
+  // Main articles table with queue-based publishing
+  // status: 'queued' | 'published'
+  // queued_at: when the article was generated and placed in queue
+  // published_at: when it went live (NULL until published)
   await query(`
     CREATE TABLE IF NOT EXISTS articles (
       id SERIAL PRIMARY KEY,
@@ -54,8 +59,9 @@ export async function initDb() {
       image_alt TEXT,
       reading_time INTEGER DEFAULT 8,
       author TEXT DEFAULT 'The Oracle Lover',
-      published BOOLEAN DEFAULT true,
-      published_at TIMESTAMPTZ DEFAULT NOW(),
+      status TEXT NOT NULL DEFAULT 'queued',
+      queued_at TIMESTAMPTZ DEFAULT NOW(),
+      published_at TIMESTAMPTZ,
       updated_at TIMESTAMPTZ DEFAULT NOW(),
       word_count INTEGER DEFAULT 0,
       asins_used TEXT[] DEFAULT '{}',
@@ -67,10 +73,43 @@ export async function initDb() {
     );
   `, []);
 
+  // Migrate existing rows: if they have old 'published' boolean column, convert to status
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'articles' AND column_name = 'published'
+      ) THEN
+        -- Add status column if missing
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'articles' AND column_name = 'status'
+        ) THEN
+          ALTER TABLE articles ADD COLUMN status TEXT NOT NULL DEFAULT 'queued';
+        END IF;
+        -- Migrate data
+        UPDATE articles SET status = CASE WHEN published = true THEN 'published' ELSE 'queued' END
+          WHERE status = 'queued';
+        -- Add queued_at if missing
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'articles' AND column_name = 'queued_at'
+        ) THEN
+          ALTER TABLE articles ADD COLUMN queued_at TIMESTAMPTZ DEFAULT NOW();
+        END IF;
+        -- Drop old boolean column
+        ALTER TABLE articles DROP COLUMN IF EXISTS published;
+      END IF;
+    END $$;
+  `, []);
+
+  // Indexes
   await query(`
     CREATE INDEX IF NOT EXISTS articles_slug_idx ON articles(slug);
-    CREATE INDEX IF NOT EXISTS articles_published_idx ON articles(published, published_at DESC);
+    CREATE INDEX IF NOT EXISTS articles_status_idx ON articles(status, published_at DESC);
     CREATE INDEX IF NOT EXISTS articles_category_idx ON articles(category);
+    CREATE INDEX IF NOT EXISTS articles_queued_idx ON articles(status, queued_at ASC);
   `, []);
 
   await query(`

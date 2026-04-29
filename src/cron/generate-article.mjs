@@ -1,98 +1,116 @@
-import { generateArticle } from '../lib/anthropic-generate.mjs';
-import { runQualityGate } from '../lib/article-quality-gate.mjs';
+/**
+ * generate-article.mjs
+ * Queue-based article publisher for YourGutHealed.com.
+ *
+ * Logic:
+ * 1. Check how many articles are published (determines phase).
+ * 2. If queue has articles, publish the oldest queued one.
+ * 3. If queue is empty, generate a new article fresh, then publish it immediately.
+ *
+ * Called by start-with-cron.mjs on the phase-based schedule.
+ */
+
 import { query } from '../lib/db.mjs';
-import { uploadArticleImage } from '../lib/bunny.mjs';
-import { generateHeroImage } from '../lib/fal-images.mjs';
+import { generateArticle, generateMeta, estimateReadingTime, slugify } from '../lib/deepseek-generate.mjs';
+import { assignHeroImage } from '../lib/bunny.mjs';
 
-const DAILY_TOPICS = [
-  { title: 'How to Calm an IBS Flare in 24 Hours', category: 'ibs', tags: ['ibs', 'flare', 'practical'] },
-  { title: 'The Best Probiotic Foods for Gut Healing', category: 'microbiome', tags: ['probiotics', 'fermented-foods', 'microbiome'] },
-  { title: 'Why Your Gut Hurts After Eating Healthy Foods', category: 'ibs', tags: ['ibs', 'fodmap', 'food-sensitivity'] },
-  { title: 'The Gut-Thyroid Connection: What Nobody Tells You', category: 'gut-health', tags: ['thyroid', 'gut-health', 'autoimmune'] },
-  { title: 'Stress and Constipation: The Nervous System Link', category: 'emotional-roots', tags: ['constipation', 'stress', 'nervous-system'] },
-  { title: 'SIBO vs. Candida: How to Tell the Difference', category: 'sibo', tags: ['sibo', 'candida', 'diagnosis'] },
-  { title: 'The Best Supplements for Leaky Gut (Ranked)', category: 'gut-repair', tags: ['leaky-gut', 'supplements', 'gut-repair'] },
-  { title: 'Why Antibiotics Wreck Your Gut and How to Recover', category: 'microbiome', tags: ['antibiotics', 'microbiome', 'recovery'] },
-  { title: 'Gut Health and Depression: The Serotonin Connection', category: 'gut-brain', tags: ['depression', 'serotonin', 'gut-brain'] },
-  { title: 'The Elimination Diet: A Week-by-Week Guide', category: 'diet', tags: ['elimination-diet', 'food-sensitivity', 'practical'] }
-];
+export async function publishNextArticle() {
+  console.log('[generate-article] Starting article publisher run...');
 
-const MAX_ATTEMPTS = 3;
+  try {
+    // ── Check published count ─────────────────────────────────────────────────
+    const countRes = await query(
+      `SELECT COUNT(*) as cnt FROM articles WHERE status = 'published'`,
+      []
+    );
+    const publishedCount = parseInt(countRes.rows[0].cnt, 10);
+    console.log(`[generate-article] Published count: ${publishedCount}`);
 
-export async function generateDailyArticle() {
-  console.log('[generate-article] Starting daily article generation');
+    // ── Try to pull from queue first ──────────────────────────────────────────
+    const queueRes = await query(
+      `SELECT id, slug, title, body, meta_description, category, image_url
+       FROM articles
+       WHERE status = 'queued'
+       ORDER BY queued_at ASC
+       LIMIT 1`,
+      []
+    );
 
-  // Pick a topic not yet in DB
-  let topic = null;
-  for (const t of DAILY_TOPICS) {
-    const { rows } = await query('SELECT id FROM articles WHERE title = $1', [t.title]);
-    if (rows.length === 0) {
-      topic = t;
-      break;
+    if (queueRes.rows.length > 0) {
+      const article = queueRes.rows[0];
+      console.log(`[generate-article] Publishing from queue: "${article.title}"`);
+
+      // Assign a fresh hero image with a unique article-specific URL
+      const imageUrl = await assignHeroImage(article.slug);
+
+      await query(
+        `UPDATE articles
+         SET status = 'published',
+             published_at = NOW(),
+             image_url = $1,
+             updated_at = NOW()
+         WHERE id = $2`,
+        [imageUrl, article.id]
+      );
+
+      console.log(`[generate-article] Published: "${article.title}" -> ${imageUrl}`);
+      return { ok: true, action: 'published_from_queue', title: article.title };
     }
-  }
 
-  if (!topic) {
-    // Generate a fresh topic if all daily topics are used
-    topic = {
-      title: `Gut Health Insight: ${new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}`,
-      category: 'gut-health',
-      tags: ['gut-health', 'practical']
-    };
-  }
+    // ── Queue is empty — generate a new article on the fly ───────────────────
+    console.log('[generate-article] Queue empty — generating new article...');
 
-  console.log(`[generate-article] Topic: ${topic.title}`);
+    const existingRes = await query(`SELECT title FROM articles`, []);
+    const existingTitles = new Set(existingRes.rows.map(r => r.title.toLowerCase()));
 
-  let ok = false;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS && !ok; attempt++) {
-    try {
-      const article = await generateArticle({
-        topic: topic.title,
-        topicIndex: Date.now() % 30,
-        category: topic.category,
-        tags: topic.tags
-      });
+    const FALLBACK_TOPICS = [
+      { title: `Gut Health Insights for ${new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`, category: 'gut-repair' },
+      { title: "The Gut Symptom You're Ignoring That Matters Most", category: 'ibs' },
+      { title: "What Your Gut Is Trying to Tell You Right Now", category: 'emotional-roots' },
+      { title: "The One Gut Health Habit That Changes Everything", category: 'gut-repair' },
+      { title: "Why Your Gut Healing Isn't Working (And What to Try Instead)", category: 'gut-repair' },
+      { title: "How to Reset Your Gut in 30 Days", category: 'gut-repair' },
+      { title: "The Gut Health Mistake Most People Make", category: 'gut-repair' },
+    ];
 
-      const gate = runQualityGate(article.body);
-      if (!gate.passed) {
-        console.warn(`[generate-article] Attempt ${attempt} failed gate: ${gate.failures.join(', ')}`);
-        continue;
-      }
+    const topic = FALLBACK_TOPICS.find(t => !existingTitles.has(t.title.toLowerCase()))
+      || { title: `Gut Health: ${new Date().toISOString().split('T')[0]}`, category: 'gut-repair' };
 
-      let imageUrl = `https://yourgut-healed.b-cdn.net/images/placeholder-gut.webp`;
-      try {
-        const imageBuffer = await generateHeroImage(topic.title, topic.category);
-        imageUrl = await uploadArticleImage(imageBuffer, article.slug);
-      } catch (imgErr) {
-        console.warn(`[generate-article] Image failed: ${imgErr.message}`);
-      }
+    const result = await generateArticle(topic.title, topic.category);
 
-      await query(`
-        INSERT INTO articles (
-          slug, title, body, meta_description, og_title, og_description,
-          category, tags, image_url, image_alt, reading_time, author,
-          published, published_at, word_count, asins_used, cta_primary,
-          opener_type, conclusion_type
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-        ON CONFLICT (slug) DO NOTHING
-      `, [
-        article.slug, article.title, article.body, article.metaDescription,
-        article.ogTitle, article.ogDescription, article.category, article.tags,
-        imageUrl, article.imageAlt, article.readingTime, article.author,
-        true, new Date().toISOString(), article.wordCount, article.asinsUsed,
-        article.ctaPrimary, article.openerType, article.conclusionType
-      ]);
-
-      console.log(`[generate-article] Stored: ${article.slug} (${article.wordCount} words)`);
-      ok = true;
-    } catch (err) {
-      console.error(`[generate-article] Attempt ${attempt} error:`, err.message);
+    if (!result.ok || !result.html) {
+      console.error(`[generate-article] Generation failed for: "${topic.title}"`);
+      return { ok: false, action: 'generation_failed', title: topic.title };
     }
-  }
 
-  if (!ok) {
-    console.error('[generate-article] FAILED all attempts — not storing');
-  }
+    const slug = slugify(topic.title);
+    const meta = await generateMeta(topic.title, result.html);
+    const readingTime = estimateReadingTime(result.html);
+    const wordCount = result.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().split(' ').length;
+    const imageUrl = await assignHeroImage(slug);
 
-  return { ok };
+    await query(
+      `INSERT INTO articles
+        (slug, title, body, meta_description, og_title, og_description,
+         category, image_url, image_alt, reading_time, word_count,
+         status, queued_at, published_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'published',NOW(),NOW())
+       ON CONFLICT (slug) DO NOTHING`,
+      [
+        slug, topic.title, result.html, meta, topic.title, meta,
+        topic.category, imageUrl, `${topic.title} - gut health article`,
+        readingTime, wordCount
+      ]
+    );
+
+    console.log(`[generate-article] Generated and published: "${topic.title}"`);
+    return { ok: true, action: 'generated_and_published', title: topic.title };
+
+  } catch (err) {
+    console.error('[generate-article] Error:', err);
+    return { ok: false, error: err.message };
+  }
 }
+
+// Alias for backward compatibility
+export const generateDailyArticle = publishNextArticle;

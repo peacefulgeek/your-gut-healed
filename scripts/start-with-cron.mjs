@@ -1,5 +1,5 @@
 import cron from 'node-cron';
-import { spawn, execFile } from 'child_process';
+import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, resolve as resolvePath } from 'path';
 
@@ -7,56 +7,52 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const projectRoot = resolvePath(__dirname, '..');
 
-// ─── Startup seed: run seed-articles if DB is empty ──────────
+// ─── Startup seed: run bulk-seed if DB has fewer than 10 published articles ──
 async function runStartupSeed() {
   if (!process.env.DATABASE_URL) {
     console.log('[startup-seed] No DATABASE_URL — skipping seed');
     return;
   }
-  if (!process.env.ANTHROPIC_API_KEY) {
-    console.log('[startup-seed] No ANTHROPIC_API_KEY — skipping seed');
+  if (!process.env.OPENAI_API_KEY) {
+    console.log('[startup-seed] No OPENAI_API_KEY — skipping seed');
     return;
   }
   try {
     const { query, initDb, close } = await import('../src/lib/db.mjs');
     await initDb();
-    const result = await query('SELECT COUNT(*) as cnt FROM articles WHERE published = true');
+    const result = await query(`SELECT COUNT(*) as cnt FROM articles WHERE status = 'published'`, []);
     const count = parseInt(result.rows[0].cnt, 10);
     await close();
     if (count >= 10) {
-      console.log(`[startup-seed] ${count} articles already seeded — skipping`);
+      console.log(`[startup-seed] ${count} published articles found — skipping seed`);
       return;
     }
-    console.log(`[startup-seed] Only ${count} articles found — running seed...`);
-    await new Promise((resolve, reject) => {
-      const seed = spawn('node', [resolvePath(projectRoot, 'scripts/seed-articles.mjs')], {
+    console.log(`[startup-seed] Only ${count} published articles — running bulk-seed...`);
+    await new Promise((res) => {
+      const seed = spawn('node', [resolvePath(projectRoot, 'scripts/bulk-seed.mjs')], {
         cwd: projectRoot,
         stdio: 'inherit',
         env: { ...process.env }
       });
       seed.on('exit', (code) => {
-        if (code === 0) {
-          console.log('[startup-seed] Seed complete');
-          resolve();
-        } else {
-          console.error(`[startup-seed] Seed exited with code ${code}`);
-          resolve(); // Don't block server start on seed failure
-        }
+        if (code === 0) console.log('[startup-seed] Bulk seed complete');
+        else console.error(`[startup-seed] Bulk seed exited with code ${code}`);
+        res();
       });
       seed.on('error', (err) => {
         console.error('[startup-seed] Seed error:', err);
-        resolve();
+        res();
       });
     });
   } catch (err) {
-    console.error('[startup-seed] Error checking article count:', err.message);
+    console.error('[startup-seed] Error:', err.message);
   }
 }
 
-// Run seed in background (don't await — let server start immediately)
+// Run seed in background — don't block server start
 runStartupSeed().catch(console.error);
 
-// ─── Start web server as child process ────────────────────────
+// ─── Start web server as child process ───────────────────────────────────────
 const server = spawn('node', ['dist/index.js'], {
   cwd: projectRoot,
   stdio: 'inherit',
@@ -65,28 +61,91 @@ const server = spawn('node', ['dist/index.js'], {
 
 server.on('exit', (code) => {
   console.error(`[cron-runner] Server exited with code ${code}. Restarting in 5s...`);
-  setTimeout(() => {
-    process.exit(1); // Let DigitalOcean restart the whole process
-  }, 5000);
+  setTimeout(() => process.exit(1), 5000);
 });
 
-// ─── Guard: only run crons if AUTO_GEN_ENABLED=true ───────────
+// ─── Guard: only run crons if AUTO_GEN_ENABLED=true ──────────────────────────
 const AUTO_GEN = process.env.AUTO_GEN_ENABLED === 'true';
 
 if (!AUTO_GEN) {
   console.log('[cron-runner] AUTO_GEN_ENABLED is not true — crons disabled');
 } else {
-  console.log('[cron-runner] Crons enabled');
+  console.log('[cron-runner] Crons enabled — phase-based publishing active');
 
-  // Cron #1 — Article generation Mon-Fri 06:00 UTC
-  cron.schedule('0 6 * * 1-5', async () => {
-    console.log('[cron] #1 generate-article starting');
+  /**
+   * Cron #1 — Phase-based Article Publisher
+   *
+   * Phase 1 (published < 60):  5x/day, every day
+   *   07:00, 10:00, 13:00, 16:00, 19:00 UTC
+   *
+   * Phase 2 (published >= 60): 1x/weekday
+   *   08:00 UTC, Monday-Friday
+   *
+   * Each run checks the queue first. If queue has articles, publishes oldest.
+   * If queue is empty, generates a fresh article and publishes it.
+   */
+  async function runArticlePublisher() {
+    console.log('[cron] #1 article-publisher starting');
     try {
-      const { generateDailyArticle } = await import('../src/cron/generate-article.mjs');
-      await generateDailyArticle();
+      const { query } = await import('../src/lib/db.mjs');
+      const countRes = await query(
+        `SELECT COUNT(*) as cnt FROM articles WHERE status = 'published'`,
+        []
+      );
+      const publishedCount = parseInt(countRes.rows[0].cnt, 10);
+      const phase = publishedCount < 60 ? 1 : 2;
+      console.log(`[cron] #1 Phase ${phase} (${publishedCount} published)`);
+
+      const { publishNextArticle } = await import('../src/cron/generate-article.mjs');
+      await publishNextArticle();
     } catch (err) {
-      console.error('[cron] #1 generate-article error:', err);
+      console.error('[cron] #1 article-publisher error:', err);
     }
+  }
+
+  // Phase 1 times: 07:00, 10:00, 13:00, 16:00, 19:00 UTC — every day
+  // Phase 2 times: 08:00 UTC — Mon-Fri only
+  // We schedule all Phase 1 slots every day, but inside each handler we check
+  // the phase and skip if we're in Phase 2 and it's not the 08:00 slot.
+
+  cron.schedule('0 7 * * *', async () => {
+    const { query } = await import('../src/lib/db.mjs');
+    const r = await query(`SELECT COUNT(*) as cnt FROM articles WHERE status = 'published'`, []);
+    if (parseInt(r.rows[0].cnt, 10) < 60) await runArticlePublisher();
+    else console.log('[cron] #1 Phase 2 active — skipping 07:00 slot');
+  });
+
+  cron.schedule('0 8 * * 1-5', async () => {
+    // This runs Mon-Fri — valid for both Phase 1 and Phase 2
+    await runArticlePublisher();
+  });
+
+  cron.schedule('0 10 * * *', async () => {
+    const { query } = await import('../src/lib/db.mjs');
+    const r = await query(`SELECT COUNT(*) as cnt FROM articles WHERE status = 'published'`, []);
+    if (parseInt(r.rows[0].cnt, 10) < 60) await runArticlePublisher();
+    else console.log('[cron] #1 Phase 2 active — skipping 10:00 slot');
+  });
+
+  cron.schedule('0 13 * * *', async () => {
+    const { query } = await import('../src/lib/db.mjs');
+    const r = await query(`SELECT COUNT(*) as cnt FROM articles WHERE status = 'published'`, []);
+    if (parseInt(r.rows[0].cnt, 10) < 60) await runArticlePublisher();
+    else console.log('[cron] #1 Phase 2 active — skipping 13:00 slot');
+  });
+
+  cron.schedule('0 16 * * *', async () => {
+    const { query } = await import('../src/lib/db.mjs');
+    const r = await query(`SELECT COUNT(*) as cnt FROM articles WHERE status = 'published'`, []);
+    if (parseInt(r.rows[0].cnt, 10) < 60) await runArticlePublisher();
+    else console.log('[cron] #1 Phase 2 active — skipping 16:00 slot');
+  });
+
+  cron.schedule('0 19 * * *', async () => {
+    const { query } = await import('../src/lib/db.mjs');
+    const r = await query(`SELECT COUNT(*) as cnt FROM articles WHERE status = 'published'`, []);
+    if (parseInt(r.rows[0].cnt, 10) < 60) await runArticlePublisher();
+    else console.log('[cron] #1 Phase 2 active — skipping 19:00 slot');
   });
 
   // Cron #2 — Product spotlight Saturdays 08:00 UTC
@@ -133,5 +192,5 @@ if (!AUTO_GEN) {
     }
   });
 
-  console.log('[cron-runner] All 5 crons scheduled');
+  console.log('[cron-runner] All crons scheduled (phase-based publishing active)');
 }

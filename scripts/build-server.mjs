@@ -23,7 +23,7 @@ await esbuild.build({
     'child_process', 'events', 'util', 'buffer', 'querystring', 'zlib',
     // Heavy native deps — let node resolve at runtime
     'pg', 'pg-native',
-    '@anthropic-ai/sdk',
+    'openai',
     'node-cron',
     'compression',
     'express',
