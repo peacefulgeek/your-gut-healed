@@ -7,36 +7,32 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const projectRoot = resolvePath(__dirname, '..');
 
-// ─── Startup seed: run bulk-seed if DB has fewer than 10 published articles ──
+// ─── Startup seed: fast-import pre-generated articles from manifest ──────────
 async function runStartupSeed() {
   if (!process.env.DATABASE_URL) {
     console.log('[startup-seed] No DATABASE_URL — skipping seed');
     return;
   }
-  if (!process.env.OPENAI_API_KEY) {
-    console.log('[startup-seed] No OPENAI_API_KEY — skipping seed');
-    return;
-  }
   try {
     const { query, initDb, close } = await import('../src/lib/db.mjs');
     await initDb();
-    const result = await query(`SELECT COUNT(*) as cnt FROM articles WHERE status = 'published'`, []);
+    const result = await query(`SELECT COUNT(*) as cnt FROM articles`, []);
     const count = parseInt(result.rows[0].cnt, 10);
     await close();
-    if (count >= 10) {
-      console.log(`[startup-seed] ${count} published articles found — skipping seed`);
+    if (count >= 100) {
+      console.log(`[startup-seed] ${count} articles found in DB — skipping seed`);
       return;
     }
-    console.log(`[startup-seed] Only ${count} published articles — running bulk-seed...`);
+    console.log(`[startup-seed] Only ${count} articles in DB — running seed-from-json (fast manifest import)...`);
     await new Promise((res) => {
-      const seed = spawn('node', [resolvePath(projectRoot, 'scripts/bulk-seed.mjs')], {
+      const seed = spawn('node', [resolvePath(projectRoot, 'scripts/seed-from-json.mjs')], {
         cwd: projectRoot,
         stdio: 'inherit',
         env: { ...process.env }
       });
       seed.on('exit', (code) => {
-        if (code === 0) console.log('[startup-seed] Bulk seed complete');
-        else console.error(`[startup-seed] Bulk seed exited with code ${code}`);
+        if (code === 0) console.log('[startup-seed] Seed-from-json complete');
+        else console.error(`[startup-seed] Seed-from-json exited with code ${code}`);
         res();
       });
       seed.on('error', (err) => {

@@ -16,6 +16,7 @@
     "verify-build": "NODE_ENV=production node -e \"import('./dist/index.js').then(()=>{console.log('import-ok');process.exit(0)}).catch(e=>{console.error(e);process.exit(1)})\"",
     "seed": "node scripts/seed-articles.mjs",
     "bulk-seed": "node scripts/bulk-seed.mjs",
+    "seed-from-json": "node scripts/seed-from-json.mjs",
     "audit": "node scripts/audit-quality.mjs"
   },
   "dependencies": {
