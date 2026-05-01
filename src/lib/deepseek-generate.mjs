@@ -108,8 +108,8 @@ export function runPaulVoiceGate(html) {
 
   // 4. Word count
   const wc = countWords(normalized);
-  if (wc < 1200) errors.push(`Word count too low: ${wc} (min 1200)`);
-  if (wc > 2500) errors.push(`Word count too high: ${wc} (max 2500)`);
+  if (wc < 1800) errors.push(`Word count too low: ${wc} (min 1800)`);
+  if (wc > 3200) errors.push(`Word count too high: ${wc} (max 3200)`);
 
   // 5. Amazon affiliate links
   const linkCount = countAmazonLinks(normalized);
@@ -150,7 +150,7 @@ You write in plain, clear HTML with proper tags: <h2>, <h3>, <p>, <ul>, <li>, <s
 You NEVER use em-dashes (— or –). Use a hyphen with spaces ( - ) instead.
 You NEVER use these words: utilize, delve, tapestry, landscape, paradigm, synergy, leverage, unlock, empower, pivotal, embark, underscore, paramount, seamlessly, robust, beacon, foster, elevate, curate, curated, bespoke, resonate, harness, intricate, plethora, myriad, groundbreaking, innovative, cutting-edge, state-of-the-art, game-changer, ever-evolving, rapidly-evolving, stakeholders, navigate, ecosystem, framework, comprehensive, transformative, holistic, nuanced, multifaceted, profound, furthermore.
 You NEVER use these phrases: "it's important to note that", "it's worth noting that", "in conclusion", "in summary", "a holistic approach", "in the realm of", "dive deep into", "at the end of the day", "in today's fast-paced world", "plays a crucial role".
-Article length: 1,200 to 2,500 words (strict).
+Article length: 1,800 to 3,000 words (strict minimum 1,800).
 You must include EXACTLY ${linkCount} Amazon affiliate links in the article body, using EXACTLY these HTML strings (do not alter them):
 ${amazonLinksBlock}
 Place each link naturally within a paragraph where it makes sense contextually.`;
@@ -165,7 +165,7 @@ Requirements:
 - Include a blockquote with a relevant insight or quote
 - Include the ${linkCount} Amazon affiliate links provided, placed naturally in context
 - End with a genuine, warm closing that doesn't say "in conclusion" or "in summary"
-- Write 1,200 to 2,500 words
+- Write 1,800 to 3,000 words (absolute minimum 1,800 words - this is non-negotiable)
 - Return ONLY the article HTML body (no <html>, <head>, <body> tags)
 - Do NOT include a title H1 tag - that is added separately`;
 
@@ -180,7 +180,7 @@ Requirements:
           { role: 'user', content: userPrompt }
         ],
         temperature: 0.72,
-        max_tokens: 4096
+        max_tokens: 6000
       });
 
       let html = response.choices[0]?.message?.content?.trim() || '';
